@@ -11,14 +11,30 @@ if [ -n "$(uci -q get firewall.ts_lockdown_include)" ]; then
     uci commit firewall
 fi
 
-# Remove files + hotplug hook + state + lock
+# Remove files + hotplug hook + status helper + state + lock
 rm -f /etc/firewall.ts-lockdown.sh /etc/hotplug.d/iface/99-ts-lockdown \
+      /usr/sbin/ts-lockdown-status \
       /tmp/dnsmasq.d/ts-lockdown.conf /tmp/ts-lockdown.state /var/lock/ts-lockdown.lock
 
-# Remove sysupgrade entries
+# Remove the cron backstop line (preserve any other cron entries the user has)
+crontab_removed=0
+if [ -f /etc/crontabs/root ]; then
+    sed -i '\#ts-lockdown-status --check#d' /etc/crontabs/root
+    if [ -s /etc/crontabs/root ]; then
+        :   # other entries remain; leave the file and its persistence alone
+    else
+        rm -f /etc/crontabs/root
+        crontab_removed=1
+    fi
+    /etc/init.d/cron restart 2>/dev/null
+fi
+
+# Remove sysupgrade entries (the crontab entry only if we deleted the file)
 if [ -f /etc/sysupgrade.conf ]; then
     sed -i '\#^/etc/firewall.ts-lockdown.sh$#d' /etc/sysupgrade.conf
     sed -i '\#^/etc/hotplug.d/iface/99-ts-lockdown$#d' /etc/sysupgrade.conf
+    sed -i '\#^/usr/sbin/ts-lockdown-status$#d' /etc/sysupgrade.conf
+    [ "$crontab_removed" = 1 ] && sed -i '\#^/etc/crontabs/root$#d' /etc/sysupgrade.conf
 fi
 
 # Tear down live chains (remove ALL jumps), then routes

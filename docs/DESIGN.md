@@ -163,10 +163,30 @@ include and re-derives + re-seals every active WAN device. The reconcile is idem
 `iface` events, so there is no feedback loop. This makes the kill switch converge on failover and
 on newly-plugged WANs, not just on the existing reload triggers.
 
-### 4. Firmware-update persistence (`/etc/sysupgrade.conf`)
-Add `/etc/firewall.ts-lockdown.sh` **and** `/etc/hotplug.d/iface/99-ts-lockdown` to
-`/etc/sysupgrade.conf` so both files are retained through GL firmware upgrades. (The include
-entry is already preserved via `/etc/config/firewall`.)
+### 4. Status helper + self-healing cron backstop (`/usr/sbin/ts-lockdown-status`, `/etc/crontabs/root`, new)
+The include and hotplug hook cover all *known* triggers, but a defence-in-depth backstop guards
+against any trigger that is missed (an `iface` event that didn't fire, a reload that raced badly).
+
+`ts-lockdown-status` recomputes the desired state and WAN derivation exactly as the include does,
+then compares against the live ruleset. In report mode it prints a per-check health summary and a
+`healthy`/`DRIFT` verdict; `--check` is silent and exits `0` (healthy) or `1` (drift). Crucially,
+a missing WAN device at boot is **not** counted as drift — that matches the include's own deferral
+(see *Boot-time sealing* in the README), so the backstop never thrashes during WISP association.
+
+A cron entry runs every 2 minutes:
+`*/2 * * * * ts-lockdown-status --check >/dev/null 2>&1 || /etc/firewall.ts-lockdown.sh`.
+Because the include only runs **on drift**, a healthy router is never disturbed — no rule flap, no
+traffic interruption — while a genuinely drifted ruleset self-heals within the interval. (Driving
+the reconcile off `--check` rather than running the include unconditionally is deliberate: an
+unconditional periodic reconcile would tear down and rebuild the FORWARD jump every run, opening a
+millisecond unsealed window each time.)
+
+### 5. Firmware-update persistence (`/etc/sysupgrade.conf`)
+Add `/etc/firewall.ts-lockdown.sh`, `/etc/hotplug.d/iface/99-ts-lockdown`,
+`/usr/sbin/ts-lockdown-status`, and `/etc/crontabs/root` to `/etc/sysupgrade.conf` so all are
+retained through GL firmware upgrades. (The include entry is already preserved via
+`/etc/config/firewall`.) Uninstall removes the crontab persistence only if our line was the sole
+entry, so unrelated user cron jobs keep their persistence.
 
 ## Data flow
 
@@ -177,6 +197,10 @@ UI toggle / exit-node switch
     → firewall.tailscale.sh recreates tailscale0 zone (no masq)
       → /etc/init.d/firewall reload
         → /etc/firewall.ts-lockdown.sh  (reconcile: masq + kill switch + DNS)
+
+Reconcile is also driven by:
+  WAN ifup  → /etc/hotplug.d/iface/99-ts-lockdown → firewall reload → include
+  cron */2  → ts-lockdown-status --check → (only on drift) → include
 ```
 
 ## Failure handling
@@ -188,6 +212,10 @@ UI toggle / exit-node switch
   the safe REJECT in place (fail-closed), never an open leak.
 - **dnsmasq drop-in present but exit node down:** DNS to `1.1.1.1`/`8.8.8.8` fails (tunnel down) —
   consistent with the kill switch; no fallback to `10.0.0.1`.
+- **Missed reconcile trigger (drift):** if a WAN comes up via a path that fires neither a firewall
+  reload nor an `iface` hotplug event, the cron backstop detects the unsealed state within 2 min
+  (`ts-lockdown-status --check` → exit 1) and re-runs the include. Worst-case exposure is bounded
+  by the cron interval; the common boot case is still sealed promptly by the hotplug hook.
 
 ## Testing strategy
 
@@ -204,9 +232,10 @@ UI toggle / exit-node switch
 
 ## Rollback
 
-Single teardown: remove the firewall include entry, delete `/etc/firewall.ts-lockdown.sh`, remove
-its `sysupgrade.conf` line, drop the DNS drop-in, and `firewall reload`. Returns to stock GL
-behavior; the manual LuCI masq trick remains available as a fallback.
+Single teardown (`ts-lockdown-uninstall.sh`): remove the firewall include entry, delete
+`/etc/firewall.ts-lockdown.sh`, the hotplug hook, `/usr/sbin/ts-lockdown-status`, and the cron
+backstop line, remove the `sysupgrade.conf` entries, drop the DNS drop-in, and `firewall reload`.
+Returns to stock GL behavior; the manual LuCI masq trick remains available as a fallback.
 
 ## Out of scope
 

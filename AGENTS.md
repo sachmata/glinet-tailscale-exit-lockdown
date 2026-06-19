@@ -11,9 +11,11 @@ does **not** prove correctness (see the home-network gotcha below).
 |---|---|
 | `scripts/firewall.ts-lockdown.sh` | The reconciling fw3 include. Installs to `/etc/firewall.ts-lockdown.sh`. Derives every WAN device at runtime and seals each (v4+v6). |
 | `scripts/ts-lockdown-hotplug.sh` | WAN-bringup hook. Installs to `/etc/hotplug.d/iface/99-ts-lockdown`. Re-seals on failover / new WAN. |
-| `scripts/ts-lockdown-install.sh` | Idempotent on-router installer (run from `/tmp`). Registers the include, places the hook, persists both in `/etc/sysupgrade.conf`. |
-| `scripts/ts-lockdown-uninstall.sh` | Removes everything, restores stock GL behavior. |
+| `scripts/ts-lockdown-status.sh` | Health helper. Installs to `/usr/sbin/ts-lockdown-status`. Report mode + `--check` (silent 0/1). Mirrors the include's desired-state/WAN-derivation logic — keep in sync. |
+| `scripts/ts-lockdown-install.sh` | Idempotent on-router installer (run from `/tmp`). Registers the include, places the hook + status helper, adds the cron backstop, persists all in `/etc/sysupgrade.conf`. |
+| `scripts/ts-lockdown-uninstall.sh` | Removes everything (preserving unrelated cron entries), restores stock GL behavior. |
 | `scripts/ts-testclient.sh` | Creates a throwaway netns "LAN client" on the router for egress/DNS tests over SSH. |
+| cron backstop | `*/2 * * * *` entry in `/etc/crontabs/root`: runs `ts-lockdown-status --check` and re-runs the include only on drift. |
 | `docs/DESIGN.md` | Full design rationale, failure handling, scope. |
 
 ## Prerequisites
@@ -138,6 +140,26 @@ ssh root@192.168.8.1 '
   sh /tmp/ts-testclient.sh down >/dev/null 2>&1
   /usr/bin/gl_tailscale restart'    # restores enabled + exit_node_ip from uci, reloads firewall
 ```
+
+### 6. Self-heal backstop — drift detection + cron recovery
+
+`--check` must return 1 on drift, and the cron backstop (`*/2`) must re-seal
+without manual action:
+
+```sh
+ssh root@192.168.8.1 '
+  ts-lockdown-status                       # expect VERDICT: healthy
+  ts-lockdown-status --check; echo "healthy_exit=$?"   # expect 0
+  iptables -w -F ts_lockdown_fwd           # introduce drift
+  ts-lockdown-status --check; echo "drift_exit=$?"     # expect 1
+  grep ts-lockdown /etc/crontabs/root      # confirm cron line present
+  /etc/init.d/cron enabled && echo cron-enabled'
+# then wait for the next even minute and re-check the chain is re-sealed:
+ssh root@192.168.8.1 'iptables -w -S ts_lockdown_fwd | grep -c REJECT'   # -> 1
+```
+Note: `--check` is non-disruptive (read-only); only a *drift* result causes the
+cron line to run the include. Verify no duplicate jumps after a heal
+(`iptables -w -S FORWARD | grep -c ts_lockdown` == 1).
 
 ## Uninstall / reset
 

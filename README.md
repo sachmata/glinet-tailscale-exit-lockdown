@@ -52,8 +52,14 @@ iptables chains (`ts_lockdown_nat`, `ts_lockdown_fwd`). It is:
 - **Multi-WAN aware** — it seals every WAN device it derives, and a WAN-bringup hotplug hook
   (`/etc/hotplug.d/iface/99-ts-lockdown`) forces a reconcile when a WAN comes up, so a failover or
   newly-plugged WAN is sealed immediately rather than leaking until the next firewall reload.
-- **Persistent** — both the script and the hotplug hook are registered in `/etc/sysupgrade.conf`
-  so they survive firmware upgrades.
+- **Self-healing** — a cron backstop (every 2 min) runs `ts-lockdown-status --check` and re-runs
+  the include **only if it reports drift**, so a healthy router is never disturbed (no rule flap)
+  but a missed reload/hotplug event still self-heals within the interval.
+- **Observable** — `ts-lockdown-status` prints a health report (desired vs actual state, WAN
+  devices, per-device seal status, jump counts, verdict); `--check` gives a silent 0/1 exit for
+  scripting.
+- **Persistent** — the script, hotplug hook, status helper, and cron entry are registered in
+  `/etc/sysupgrade.conf` so they survive firmware upgrades.
 - **Non-invasive** — no GL vendor files are edited.
 
 ## Requirements
@@ -99,6 +105,9 @@ Verified scenarios on the above:
   triggered no reload.
 - **Concurrency** → overlapping boot-time firewall reloads converge to a correct ruleset (no empty
   chains, no duplicate jumps).
+- **Self-heal backstop** → flushing the kill-switch chain to simulate drift made
+  `ts-lockdown-status --check` return exit 1; the next 2-minute cron tick re-ran the include and
+  re-sealed `apcli0` (v4+v6) automatically, with no duplicate jumps and no manual step.
 
 ### Boot-time sealing
 
@@ -124,6 +133,7 @@ an issue or PR.
 ```sh
 scp -O scripts/firewall.ts-lockdown.sh root@192.168.8.1:/etc/firewall.ts-lockdown.sh
 scp -O scripts/ts-lockdown-hotplug.sh  root@192.168.8.1:/tmp/
+scp -O scripts/ts-lockdown-status.sh   root@192.168.8.1:/tmp/
 scp -O scripts/ts-lockdown-install.sh  root@192.168.8.1:/tmp/
 ssh root@192.168.8.1 'chmod +x /etc/firewall.ts-lockdown.sh; sh /tmp/ts-lockdown-install.sh; /etc/init.d/firewall reload'
 ```
@@ -168,8 +178,19 @@ ssh root@192.168.8.1 '
 
 ## Verify
 
-`scripts/ts-testclient.sh` creates a throwaway network-namespace LAN client on the router so you
-can test egress/DNS over SSH without a second physical device:
+**Quick health check** — the installer adds `ts-lockdown-status` to the router:
+
+```sh
+ssh root@192.168.8.1 'ts-lockdown-status'        # human-readable report + verdict
+ssh root@192.168.8.1 'ts-lockdown-status --check; echo $?'   # 0 = healthy, 1 = drift
+```
+
+It reports desired vs actual state, the derived WAN device(s), per-device seal status (v4+v6),
+jump counts, whether the cron backstop is installed, and a final `healthy` / `DRIFT` verdict. The
+cron backstop runs `--check` every 2 minutes and reconciles only on drift.
+
+**Egress/DNS test** — `scripts/ts-testclient.sh` creates a throwaway network-namespace LAN client
+on the router so you can test egress/DNS over SSH without a second physical device:
 
 ```sh
 scp -O scripts/ts-testclient.sh root@192.168.8.1:/tmp/
@@ -188,8 +209,9 @@ scp -O scripts/ts-lockdown-uninstall.sh root@192.168.8.1:/tmp/
 ssh root@192.168.8.1 'sh /tmp/ts-lockdown-uninstall.sh'
 ```
 
-Removes the include, the script, the `sysupgrade.conf` entry, all chains/routes/state, and
-restarts `dnsmasq` + the firewall — returning to stock GL behavior.
+Removes the include, the script, the hotplug hook, the `ts-lockdown-status` helper, the cron
+backstop line, all `sysupgrade.conf` entries, and every chain/route/state, then restarts `dnsmasq`
++ the firewall — returning to stock GL behavior. Any unrelated cron entries you have are preserved.
 
 ## Configuration
 
