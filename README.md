@@ -105,9 +105,14 @@ Verified scenarios on the above:
   triggered no reload.
 - **Concurrency** → overlapping boot-time firewall reloads converge to a correct ruleset (no empty
   chains, no duplicate jumps).
+- **Status helper** → after a clean install, `ts-lockdown-status` reported all checks `[ OK ]`
+  (masquerade, jumps 1/1/1, `apcli0` sealed v4+v6, DNS drop-in) with `VERDICT: healthy`, and
+  `ts-lockdown-status --check` exited `0`.
 - **Self-heal backstop** → flushing the kill-switch chain to simulate drift made
-  `ts-lockdown-status --check` return exit 1; the next 2-minute cron tick re-ran the include and
-  re-sealed `apcli0` (v4+v6) automatically, with no duplicate jumps and no manual step.
+  `ts-lockdown-status --check` return exit `1`; the next 2-minute cron tick (~45 s later) re-ran the
+  include and re-sealed `apcli0` (v4+v6) **automatically** — no manual step. Post-heal: `--check`
+  back to `0`, exactly one jump each (no duplicates), and a netns LAN client still egressed through
+  the tunnel (MASQUERADE → `tailscale0`) with **zero** packets out the local WAN.
 
 ### Boot-time sealing
 
