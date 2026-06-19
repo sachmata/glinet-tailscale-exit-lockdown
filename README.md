@@ -93,8 +93,43 @@ scp -O scripts/ts-lockdown-install.sh  root@192.168.8.1:/tmp/
 ssh root@192.168.8.1 'chmod +x /etc/firewall.ts-lockdown.sh; sh /tmp/ts-lockdown-install.sh; /etc/init.d/firewall reload'
 ```
 
-Then enable Tailscale and select your exit node in the GL.iNet UI — masquerade, kill switch, and
-DNS routing apply automatically. No LuCI step needed.
+## Usage
+
+Day to day you just pick an exit node — the lockdown applies itself. Switching nodes or toggling
+Tailscale re-applies masquerade, kill switch, and DNS routing automatically; there is no manual
+LuCI step, ever.
+
+**From the GL.iNet UI:** open *Tailscale*, enable it, and choose your home node under *Exit Node*.
+
+**From the command line (equivalent):**
+
+```sh
+# 1. List exit nodes available on your tailnet
+ssh root@192.168.8.1 'tailscale exit-node list'
+
+# 2. Select one as the permanent exit node (use your node's 100.x.y.z IP)
+ssh root@192.168.8.1 '
+  uci set tailscale.settings.enabled=1
+  uci set tailscale.settings.exit_node_ip=100.x.y.z
+  uci commit tailscale
+  /usr/bin/gl_tailscale restart'
+
+# 3. Confirm the lockdown engaged
+ssh root@192.168.8.1 'cat /tmp/ts-lockdown.state'      # -> lockdown
+```
+
+Now every LAN client egresses via that exit node's public IP, and if the tunnel drops they are
+blocked rather than leaking out the local WAN.
+
+**Turn it off** (back to normal local routing):
+
+```sh
+ssh root@192.168.8.1 '
+  uci set tailscale.settings.exit_node_ip=""
+  uci commit tailscale
+  /usr/bin/gl_tailscale restart'
+# /tmp/ts-lockdown.state -> normal; all lockdown rules are removed automatically
+```
 
 ## Verify
 
