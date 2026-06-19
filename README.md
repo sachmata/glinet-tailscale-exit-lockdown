@@ -51,13 +51,39 @@ WISP/repeater modes), and converges the ruleset to the desired state using its o
 
 ## Requirements
 
-- A GL.iNet router on `fw3`/iptables-based firmware. Developed and verified on a **GL-MT3000
-  (Beryl AX), firmware 4.8.1**. Should work on other GL.iNet `fw3` devices; test before relying on it.
+- A GL.iNet router on `fw3`/iptables-based firmware (see [Tested on](#tested-on) for the exact
+  device/firmware this was validated against).
 - Tailscale configured and logged in, with an exit node available on your tailnet.
 - Root SSH access to the router.
 
 > **Note on `scp`:** the router's SSH server may require the legacy protocol flag — use
 > `scp -O ...`.
+
+## Tested on
+
+| | |
+|---|---|
+| **Device** | GL.iNet GL-MT3000 (Beryl AX) |
+| **Firmware** | GL.iNet 4.8.1 (OpenWrt, kernel 5.4.211) |
+| **Firewall** | `fw3` / iptables |
+| **Tailscale** | 1.80.3 |
+
+Verified scenarios on the above:
+
+- Exit-node selected → LAN clients egress via the exit node's IP, no manual LuCI masquerade step.
+- Fail-closed kill switch → with `tailscaled` stopped, client traffic is rejected (no fallback to
+  the local WAN IP); confirmed for IPv4.
+- DNS forced through the tunnel → resolves correctly with **zero** DNS queries leaking to the
+  local WAN.
+- **Reboot persistence** → lockdown re-establishes automatically after a power cycle, no manual step.
+- **WAN mode change** → kill switch re-derived the correct WAN device across a wired-WAN (`eth0`) →
+  WISP/repeater (`apcli0`) transition.
+- **Concurrency** → overlapping boot-time firewall reloads converge to a correct ruleset (no empty
+  chains, no duplicate jumps).
+
+Other GL.iNet `fw3`/iptables devices are likely compatible but untested — please verify before
+relying on the kill switch. Reports of other working (or broken) devices/firmware are welcome via
+an issue or PR.
 
 ## Install
 
