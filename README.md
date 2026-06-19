@@ -1,5 +1,7 @@
 # glinet-tailscale-exit-lockdown
 
+[![ShellCheck](https://github.com/sachmata/glinet-tailscale-exit-lockdown/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/sachmata/glinet-tailscale-exit-lockdown/actions/workflows/shellcheck.yml)
+
 Always-on, **fail-closed** Tailscale exit-node routing for GL.iNet (OpenWrt) travel routers —
 automatic masquerade, a kill switch, and DNS-leak protection, via a single self-contained
 firewall include. No vendor files are modified.
@@ -155,6 +157,32 @@ ssh root@192.168.8.1 'sh /tmp/ts-lockdown-uninstall.sh'
 
 Removes the include, the script, the `sysupgrade.conf` entry, all chains/routes/state, and
 restarts `dnsmasq` + the firewall — returning to stock GL behavior.
+
+## Configuration
+
+The script's behavior is controlled by variables at the top of
+`scripts/firewall.ts-lockdown.sh`. The main one:
+
+- **`DNS_SERVERS`** (default `"1.1.1.1 8.8.8.8"`) — the upstream resolvers `dnsmasq` forwards to
+  in lockdown. They are routed through the exit node so DNS doesn't leak to the local WAN. To use
+  your own resolver, set this to its IP. A tailnet/`100.x` resolver works too and is reachable
+  through the tunnel directly (no extra route needed); a public IP gets a host route via
+  `tailscale0` automatically.
+
+After editing, redeploy the script and reload: `scp -O ...` then `/etc/init.d/firewall reload`.
+
+## Limitations
+
+- **IPv6** forwarded egress is *blocked* (REJECTed) in lockdown, not tunneled — this prevents v6
+  leaks but means LAN clients have no IPv6 internet while locked down.
+- **`fw4`/nftables is untested.** The script uses iptables/`ip6tables` and targets `fw3`. Newer
+  GL.iNet firmware may migrate to nftables; on such firmware this will need porting. This is the
+  most likely incompatibility on other devices.
+- **Single active WAN tested** (wired and WISP/repeater). Multi-WAN / load-balancing / failover
+  setups aren't exercised — the kill switch seals every WAN device it derives, but verify on your
+  topology.
+- The exit-node IP is read from GL's `tailscale.settings.exit_node_ip` (UCI), so it follows
+  whatever you pick in the GL.iNet UI; this project does not manage exit-node *selection*.
 
 ## Security notes
 
