@@ -1,0 +1,14 @@
+# Runtime/state artifacts (never part of the repo)
+*.state
+*.lock
+
+# Local captures, scratch, and any pulled live router config
+live-state/
+*.local
+*.bak
+
+# Editor/OS noise
+.DS_Store
+*~
+.idea/
+.vscode/
