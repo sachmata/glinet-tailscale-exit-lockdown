@@ -78,13 +78,19 @@ iptables chains (`ts_lockdown_nat`, `ts_lockdown_fwd`). It is:
 Verified scenarios on the above:
 
 - Exit-node selected → LAN clients egress via the exit node's IP, no manual LuCI masquerade step.
-- Fail-closed kill switch → with `tailscaled` stopped, client traffic is rejected (no fallback to
-  the local WAN IP); confirmed for IPv4.
+- Fail-closed kill switch → with `tailscaled` stopped (tunnel down, `tailscale0` gone), a LAN
+  client's traffic is **blocked** (`curl` exit 7, no connection) instead of falling back to the
+  local WAN. Confirmed at the packet level: the attempt incremented the `REJECT -o apcli0` counter
+  (WISP/repeater mode), proving the leak was actively sealed rather than merely route-less.
 - DNS forced through the tunnel → resolves correctly with **zero** DNS queries leaking to the
   local WAN.
 - **Reboot persistence** → lockdown re-establishes automatically after a power cycle, no manual step.
 - **WAN mode change** → kill switch re-derived the correct WAN device across a wired-WAN (`eth0`) →
   WISP/repeater (`apcli0`) transition.
+- **Failover re-seal (hotplug)** → after flushing the kill-switch chain to simulate a newly-active
+  WAN, a real `wwan` `ifup` event (`hotplug-call iface`) triggered a firewall reload that
+  re-derived and re-sealed `apcli0` (v4+v6); non-WAN events (`lan`/`loopback`/`ifdown`) correctly
+  triggered no reload.
 - **Concurrency** → overlapping boot-time firewall reloads converge to a correct ruleset (no empty
   chains, no duplicate jumps).
 
