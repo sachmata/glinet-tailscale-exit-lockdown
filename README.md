@@ -84,7 +84,13 @@ Verified scenarios on the above:
   (WISP/repeater mode), proving the leak was actively sealed rather than merely route-less.
 - DNS forced through the tunnel → resolves correctly with **zero** DNS queries leaking to the
   local WAN.
-- **Reboot persistence** → lockdown re-establishes automatically after a power cycle, no manual step.
+- **Reboot persistence** → lockdown re-establishes automatically after a power cycle, no manual
+  step. Observed boot timing on the test unit (WISP/repeater): lockdown state + `tailscale0`
+  masquerade come up immediately, but the WAN (`apcli0`) had not yet associated to the upstream AP,
+  so the boot firewall run logged `WARNING: no WAN device resolved` and *deferred* the kill-switch
+  REJECT — fail-safe, since with no WAN device there is no egress path to leak out of. ~2.5 min
+  later `apcli0` associated, the hotplug hook fired (`iface ifup (wwan/apcli0) -> firewall reload`),
+  and the kill switch sealed automatically (v4+v6). See [Boot-time sealing](#boot-time-sealing).
 - **WAN mode change** → kill switch re-derived the correct WAN device across a wired-WAN (`eth0`) →
   WISP/repeater (`apcli0`) transition.
 - **Failover re-seal (hotplug)** → after flushing the kill-switch chain to simulate a newly-active
@@ -93,6 +99,21 @@ Verified scenarios on the above:
   triggered no reload.
 - **Concurrency** → overlapping boot-time firewall reloads converge to a correct ruleset (no empty
   chains, no duplicate jumps).
+
+### Boot-time sealing
+
+On a WAN that comes up *slowly* — typically WISP/repeater, where the radio must associate to the
+upstream AP — there is a brief window early in boot where lockdown is active but no WAN device
+exists yet. During that window the kill-switch REJECT is **deferred, not silently skipped**: the
+include logs a `WARNING: no WAN device resolved` and seals nothing, which is safe because with no
+WAN egress device there is no path for client traffic to leak out. The moment the WAN associates,
+its `ifup` fires the hotplug hook, which reloads the firewall and seals the kill switch (v4+v6).
+
+In practice this means: **the kill switch is sealed by the time the WAN can actually carry traffic
+to the internet** — clients cannot reach an unsealed WAN, because an unsealed WAN is one that is
+not yet connected. On the test unit the seal landed ~2.5 min after power-on, right after `apcli0`
+associated. A wired WAN (`eth0`), which is present at boot, is sealed in the first firewall run
+with no deferral.
 
 Other GL.iNet `fw3`/iptables devices are likely compatible but untested — please verify before
 relying on the kill switch. Reports of other working (or broken) devices/firmware are welcome via
