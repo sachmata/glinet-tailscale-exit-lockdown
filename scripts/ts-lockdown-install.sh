@@ -11,8 +11,18 @@ uci set firewall.ts_lockdown_include.path='/etc/firewall.ts-lockdown.sh'
 uci set firewall.ts_lockdown_include.reload='1'
 uci commit firewall
 
-# Persist the script across firmware upgrades
-grep -qxF '/etc/firewall.ts-lockdown.sh' /etc/sysupgrade.conf 2>/dev/null \
-    || echo '/etc/firewall.ts-lockdown.sh' >> /etc/sysupgrade.conf
+# Install WAN-bringup hotplug hook (re-seals the kill switch on failover or
+# when a new WAN appears, without waiting for the next firewall reload).
+if [ -f /tmp/ts-lockdown-hotplug.sh ]; then
+    mkdir -p /etc/hotplug.d/iface
+    cp /tmp/ts-lockdown-hotplug.sh /etc/hotplug.d/iface/99-ts-lockdown
+    chmod +x /etc/hotplug.d/iface/99-ts-lockdown
+fi
 
-echo "installed: include + sysupgrade entry"
+# Persist installed files across firmware upgrades
+for f in /etc/firewall.ts-lockdown.sh /etc/hotplug.d/iface/99-ts-lockdown; do
+    [ -f "$f" ] || continue
+    grep -qxF "$f" /etc/sysupgrade.conf 2>/dev/null || echo "$f" >> /etc/sysupgrade.conf
+done
+
+echo "installed: include + hotplug hook + sysupgrade entries"

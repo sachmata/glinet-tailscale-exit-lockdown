@@ -11,11 +11,15 @@ if [ -n "$(uci -q get firewall.ts_lockdown_include)" ]; then
     uci commit firewall
 fi
 
-# Remove files + state + lock
-rm -f /etc/firewall.ts-lockdown.sh /tmp/dnsmasq.d/ts-lockdown.conf /tmp/ts-lockdown.state /var/lock/ts-lockdown.lock
+# Remove files + hotplug hook + state + lock
+rm -f /etc/firewall.ts-lockdown.sh /etc/hotplug.d/iface/99-ts-lockdown \
+      /tmp/dnsmasq.d/ts-lockdown.conf /tmp/ts-lockdown.state /var/lock/ts-lockdown.lock
 
-# Remove sysupgrade entry
-[ -f /etc/sysupgrade.conf ] && sed -i '\#^/etc/firewall.ts-lockdown.sh$#d' /etc/sysupgrade.conf
+# Remove sysupgrade entries
+if [ -f /etc/sysupgrade.conf ]; then
+    sed -i '\#^/etc/firewall.ts-lockdown.sh$#d' /etc/sysupgrade.conf
+    sed -i '\#^/etc/hotplug.d/iface/99-ts-lockdown$#d' /etc/sysupgrade.conf
+fi
 
 # Tear down live chains (remove ALL jumps), then routes
 while $IPT -D FORWARD -j ts_lockdown_fwd 2>/dev/null; do :; done

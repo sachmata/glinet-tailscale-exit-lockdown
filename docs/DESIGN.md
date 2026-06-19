@@ -93,11 +93,12 @@ Actions in **LOCKDOWN**:
    reload-within-reload loop. Correctness therefore does not depend on GL's zone or its `masq`
    setting at all.
 2. **Kill switch (v4)** — in an owned iptables chain `ts_lockdown` (flushed and rebuilt each run),
-   `REJECT` forwarded client traffic whose output device is `eth0` (the WAN L3 device). The
-   router's own tunnel underlay uses the OUTPUT chain and is unaffected; clients can only egress
-   via `tailscale0`. Tunnel down → no route → blocked (fail-closed).
-3. **Kill switch (v6)** — equivalent `REJECT` in `ip6tables` for forwarded v6 out `eth0`
-   (defensive; v6 currently inactive).
+   `REJECT` forwarded client traffic whose output device is **any derived WAN device** (see
+   *Runtime WAN derivation* below — one REJECT per device). The router's own tunnel underlay uses
+   the OUTPUT chain and is unaffected; clients can only egress via `tailscale0`. Tunnel down → no
+   route → blocked (fail-closed).
+3. **Kill switch (v6)** — equivalent `REJECT` in `ip6tables` for forwarded v6 out each derived WAN
+   device (defensive; v6 currently inactive).
 4. **DNS via tunnel** — managed dnsmasq drop-in (`no-resolv` + `server=1.1.1.1` +
    `server=8.8.8.8`), plus host routes `ip route add 1.1.1.1/8.8.8.8 dev tailscale0` added in
    `fw_build`. The router's own dnsmasq upstream queries otherwise default out the local WAN
@@ -132,8 +133,15 @@ Design properties:
   exactly one of each rule) and by an actual reboot (lockdown re-establishes with no manual step).*
 - **Transition-gated DNS:** a state marker at `/tmp/ts-lockdown.state` ensures dnsmasq is only
   bounced when the state actually changes, avoiding churn on routine firewall reloads.
-- **Runtime WAN derivation:** the kill-switch WAN device is derived from `ubus` on every run, not
-  hardcoded — validated across a mode change from wired WAN (`eth0`) to WISP/repeater (`apcli0`).
+- **Runtime WAN derivation (multi-WAN):** the kill-switch WAN devices are derived on every run, not
+  hardcoded. Two passes: (a) the `l3_device` of each named interface `wan`/`wwan`/`tethering`/
+  `secondwan` via `ubus`, then (b) every device carrying a default route (`ip route show default`),
+  deduped, with `tailscale0` always excluded. `fw_build` emits one `REJECT` per derived device
+  (v4 + v6), so *all* active WANs are sealed, not just one — validated across a mode change from
+  wired WAN (`eth0`) to WISP/repeater (`apcli0`). Pass (b) catches WANs whose interface name is
+  outside the named set (e.g. a load-balanced `wan2`) as long as they currently hold a default
+  route. The remaining gap — a hot-standby WAN that is *up* but not yet the default route, and so
+  invisible to both passes until it wins failover — is closed by the hotplug hook below.
 - **No lock-out risk:** only the FORWARD→WAN path is touched. Management traffic
   (LAN→router = INPUT, including SSH/LuCI) is never blocked.
 
@@ -142,9 +150,23 @@ A new `config include` entry of `type 'script'`, `path '/etc/firewall.ts-lockdow
 `reload '1'`, so the script runs on every firewall reload. This UCI change lives in
 `/etc/config/firewall`, which GL preserves across updates.
 
-### 3. Firmware-update persistence (`/etc/sysupgrade.conf`)
-Add `/etc/firewall.ts-lockdown.sh` to `/etc/sysupgrade.conf` so the script file is retained
-through GL firmware upgrades. (The include entry is already preserved via `/etc/config/firewall`.)
+### 3. WAN-bringup hotplug hook (`/etc/hotplug.d/iface/99-ts-lockdown`, new)
+The firewall include only reconciles when something triggers a firewall reload (boot, Tailscale
+toggle, WAN mode change). A WAN that becomes active *without* a reload would stay unsealed — a
+fail-open window. The most important case is **failover**: a hot-standby WAN winning the default
+route is invisible to the include's runtime derivation until the next reload.
+
+The hook reacts to netfilter `iface` hotplug events: on `ifup`/`ifupdate` of any interface that
+is not `loopback`/`lan*`/`tailscale0`, it runs `/etc/init.d/firewall reload`, which re-fires the
+include and re-derives + re-seals every active WAN device. The reconcile is idempotent and
+`flock`-serialised, so the extra reloads are harmless; a firewall reload does not itself raise
+`iface` events, so there is no feedback loop. This makes the kill switch converge on failover and
+on newly-plugged WANs, not just on the existing reload triggers.
+
+### 4. Firmware-update persistence (`/etc/sysupgrade.conf`)
+Add `/etc/firewall.ts-lockdown.sh` **and** `/etc/hotplug.d/iface/99-ts-lockdown` to
+`/etc/sysupgrade.conf` so both files are retained through GL firmware upgrades. (The include
+entry is already preserved via `/etc/config/firewall`.)
 
 ## Data flow
 
@@ -160,7 +182,8 @@ UI toggle / exit-node switch
 ## Failure handling
 
 - **Exit node unreachable:** client traffic can only use `tailscale0`; with no route it is
-  dropped, and the FORWARD→`eth0` REJECT prevents any local-WAN fallback. Fail-closed.
+  dropped, and the FORWARD→WAN REJECT (one per derived WAN device) prevents any local-WAN
+  fallback. Fail-closed.
 - **Script error during reload:** the owned chain is flushed first; a partial run leaves at worst
   the safe REJECT in place (fail-closed), never an open leak.
 - **dnsmasq drop-in present but exit node down:** DNS to `1.1.1.1`/`8.8.8.8` fails (tunnel down) —
@@ -187,7 +210,8 @@ behavior; the manual LuCI masq trick remains available as a fallback.
 
 ## Out of scope
 
-- Multi-WAN kill-switch beyond `eth0` (wwan/tethering/secondwan) — not in use today; the design
-  can extend the device list if those WANs become active.
+- Multi-WAN load-balancing across multiple *simultaneously live* WANs — handled by design (every
+  derived WAN device is sealed; the hotplug hook re-seals on failover) but **untested**. Only
+  single-active-WAN is validated (wired `eth0` and WISP/repeater `apcli0`).
 - Selective per-client routing (all LAN clients are locked down uniformly).
 - Changes to GL's MagicDNS suffix handling beyond the upstream redirection above.

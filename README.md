@@ -41,14 +41,19 @@ triggers at the end of every Tailscale toggle — so it reconciles automatically
 ## How it works
 
 A single reconcile script, `/etc/firewall.ts-lockdown.sh`, registered as a firewall include. On
-each run it reads `tailscale.settings`, derives the WAN device at runtime (works in both wired and
-WISP/repeater modes), and converges the ruleset to the desired state using its own iptables chains
-(`ts_lockdown_nat`, `ts_lockdown_fwd`). It is:
+each run it reads `tailscale.settings`, derives **every** WAN egress device at runtime (all of
+`wan`/`wwan`/`tethering`/`secondwan` plus every current default-route device — works in wired,
+WISP/repeater, and multi-WAN setups), and converges the ruleset to the desired state using its own
+iptables chains (`ts_lockdown_nat`, `ts_lockdown_fwd`). It is:
 
 - **Concurrency-safe** — boot fires several overlapping firewall reloads; the script uses
   `iptables -w`, serializes itself with `flock`, and removes duplicate jumps so state always
   converges (without this, concurrent runs leave empty chains = protection silently absent).
-- **Persistent** — registered in `/etc/sysupgrade.conf` so it survives firmware upgrades.
+- **Multi-WAN aware** — it seals every WAN device it derives, and a WAN-bringup hotplug hook
+  (`/etc/hotplug.d/iface/99-ts-lockdown`) forces a reconcile when a WAN comes up, so a failover or
+  newly-plugged WAN is sealed immediately rather than leaking until the next firewall reload.
+- **Persistent** — both the script and the hotplug hook are registered in `/etc/sysupgrade.conf`
+  so they survive firmware upgrades.
 - **Non-invasive** — no GL vendor files are edited.
 
 ## Requirements
@@ -91,6 +96,7 @@ an issue or PR.
 
 ```sh
 scp -O scripts/firewall.ts-lockdown.sh root@192.168.8.1:/etc/firewall.ts-lockdown.sh
+scp -O scripts/ts-lockdown-hotplug.sh  root@192.168.8.1:/tmp/
 scp -O scripts/ts-lockdown-install.sh  root@192.168.8.1:/tmp/
 ssh root@192.168.8.1 'chmod +x /etc/firewall.ts-lockdown.sh; sh /tmp/ts-lockdown-install.sh; /etc/init.d/firewall reload'
 ```
@@ -178,9 +184,11 @@ After editing, redeploy the script and reload: `scp -O ...` then `/etc/init.d/fi
 - **`fw4`/nftables is untested.** The script uses iptables/`ip6tables` and targets `fw3`. Newer
   GL.iNet firmware may migrate to nftables; on such firmware this will need porting. This is the
   most likely incompatibility on other devices.
-- **Single active WAN tested** (wired and WISP/repeater). Multi-WAN / load-balancing / failover
-  setups aren't exercised — the kill switch seals every WAN device it derives, but verify on your
-  topology.
+- **Multi-WAN is handled by design but only single-active-WAN is tested.** The kill switch seals
+  *every* WAN device it derives (all of `wan`/`wwan`/`tethering`/`secondwan` plus every current
+  default-route device), and the hotplug hook re-seals on failover or when a new WAN appears.
+  Validated single-active-WAN, both wired (`eth0`) and WISP/repeater (`apcli0`). Concurrent
+  load-balancing across multiple live WANs is not exercised — verify on your topology.
 - The exit-node IP is read from GL's `tailscale.settings.exit_node_ip` (UCI), so it follows
   whatever you pick in the GL.iNet UI; this project does not manage exit-node *selection*.
 
