@@ -105,7 +105,17 @@ Actions in **LOCKDOWN**:
    (table 52 is empty and the exit-node path only catches *forwarded* client traffic, not
    router-originated traffic), so the host routes are required to push those queries through the
    exit node — only then does DNS both resolve and avoid the local-WAN leak. dnsmasq is reloaded
-   **only on a real state transition**.
+   when the effective config changes: a state transition, a drop-in **content** change (so editing
+   `DNS_SERVERS` applies on the next reconcile without a toggle), or a `confdir` re-pin.
+
+   *conf-dir pinning:* the drop-in lives in `/tmp/dnsmasq.d`, but a stock OpenWrt dnsmasq init only
+   loads the per-instance `/tmp/dnsmasq.cfgXXXX.d` — a vendor (GL) init that historically loaded
+   `/tmp/dnsmasq.d` can be replaced by an `opkg upgrade dnsmasq` (the init is not a conffile),
+   silently leaving the drop-in unread → DNS falls back to the local WAN resolver with no error.
+   The installer therefore pins `dhcp.@dnsmasq[0].confdir=/tmp/dnsmasq.d` via UCI (the same `option
+   confdir` GL uses for its own wgclient instance), and `ensure_dns_confdir` in the include
+   re-asserts it every lockdown reconcile (no-op once correct). `ts-lockdown-status` verifies the
+   drop-in is *loaded* (active conf-dir == drop-in dir), not merely present.
 
    *Correction to original design:* MagicDNS (`100.100.100.100`) was assumed to resolve external
    names through the exit node; it does not on this tailnet (no upstream resolver configured and

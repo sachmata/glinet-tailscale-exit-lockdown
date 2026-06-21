@@ -106,7 +106,7 @@ Verified scenarios on the above:
 - **Concurrency** → overlapping boot-time firewall reloads converge to a correct ruleset (no empty
   chains, no duplicate jumps).
 - **Status helper** → after a clean install, `ts-lockdown-status` reported all checks `[ OK ]`
-  (masquerade, jumps 1/1/1, `apcli0` sealed v4+v6, DNS drop-in) with `VERDICT: healthy`, and
+  (masquerade, jumps 1/1/1, `apcli0` sealed v4+v6, DNS drop-in loaded) with `VERDICT: healthy`, and
   `ts-lockdown-status --check` exited `0`.
 - **Self-heal backstop** → flushing the kill-switch chain to simulate drift made
   `ts-lockdown-status --check` return exit `1`; the next 2-minute cron tick (~45 s later) re-ran the
@@ -229,7 +229,26 @@ The script's behavior is controlled by variables at the top of
   through the tunnel directly (no extra route needed); a public IP gets a host route via
   `tailscale0` automatically.
 
-After editing, redeploy the script and reload: `scp -O ...` then `/etc/init.d/firewall reload`.
+**Private resolver without touching the tracked script:** rather than editing `DNS_SERVERS` in
+`firewall.ts-lockdown.sh`, put your override in `/etc/ts-lockdown.conf` — the script sources it if
+present:
+
+```sh
+# /etc/ts-lockdown.conf  (on the router; not in version control)
+DNS_SERVERS="100.x.y.z 100.a.b.c"   # e.g. your tailnet AdGuard resolvers
+```
+
+This keeps private/tailnet IPs out of git, survives script redeploys, and the installer persists
+it across firmware upgrades.
+
+The drop-in is loaded via dnsmasq's `confdir`, which the installer pins to `/tmp/dnsmasq.d`
+(`uci set dhcp.@dnsmasq[0].confdir`) so it keeps loading across dnsmasq/init changes; the include
+re-pins it if it ever drifts. `ts-lockdown-status` reports `DNS drop-in loaded by dnsmasq` — which
+verifies dnsmasq actually reads it, not merely that the file exists.
+
+After editing, redeploy the script and reload: `scp -O ...` then `/etc/init.d/firewall reload`. The
+reconcile detects the changed drop-in content and reloads dnsmasq itself — no Tailscale toggle
+needed.
 
 ## Limitations
 
@@ -245,6 +264,14 @@ After editing, redeploy the script and reload: `scp -O ...` then `/etc/init.d/fi
   load-balancing across multiple live WANs is not exercised — verify on your topology.
 - The exit-node IP is read from GL's `tailscale.settings.exit_node_ip` (UCI), so it follows
   whatever you pick in the GL.iNet UI; this project does not manage exit-node *selection*.
+- **`opkg upgrade` can silently break DNS forcing.** Upgrading the `dnsmasq`/`dnsmasq-full`
+  package replaces `/etc/init.d/dnsmasq` — not a conffile, so it is overwritten with no prompt
+  (your `/etc/config/dhcp` is preserved as `*-opkg`). A stock init loads only the per-instance
+  conf-dir and stops reading the lockdown DNS drop-in, so DNS leaks to the local WAN resolver
+  while the file still looks "present." Mitigated: the installer pins dnsmasq's `confdir` via UCI
+  and the include self-heals it. Still, after any base-package upgrade, run `ts-lockdown-status`
+  and confirm `DNS drop-in loaded by dnsmasq` before relying on it. (In general, avoid `opkg
+  upgrade` of base packages on GL firmware — it overwrites vendor-customized non-conffiles.)
 
 ## Security notes
 

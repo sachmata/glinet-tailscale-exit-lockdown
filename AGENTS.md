@@ -182,7 +182,21 @@ restarts dnsmasq and the firewall.
 - **IPv6 forwarded egress is REJECTed** (blocked), not tunneled — intentional, to
   prevent v6 leaks. Don't "fix" this without revisiting the design.
 - **DNS:** lockdown forces dnsmasq to `DNS_SERVERS` (default `1.1.1.1 8.8.8.8`)
-  with host routes via `tailscale0`. dnsmasq is bounced only on a real state
-  transition (guarded by `/tmp/ts-lockdown.state`).
+  with host routes via `tailscale0`. dnsmasq is bounced when the effective config
+  changes: a state transition (`/tmp/ts-lockdown.state`), a drop-in content change,
+  or a `confdir` re-pin — not on every reconcile.
+- **DNS drop-in loading (`confdir`):** the drop-in (`/tmp/dnsmasq.d`) is only read if
+  it is dnsmasq's conf-dir. A stock OpenWrt init loads only `/tmp/dnsmasq.cfgXXXX.d`,
+  so an `opkg upgrade dnsmasq` that replaces the init silently stops loading it →
+  DNS leaks to the local WAN resolver. The installer pins
+  `dhcp.@dnsmasq[0].confdir=/tmp/dnsmasq.d` (UCI) and `ensure_dns_confdir` re-asserts
+  it each lockdown reconcile. This `uci commit dhcp` is **not** a firewall write —
+  it restarts dnsmasq but does not trigger a firewall reload, so there is no loop.
+  `ts-lockdown-status` checks the drop-in is *loaded*, not just present.
+- **Local override:** `DNS_SERVERS` (and other top vars) can be overridden on the
+  router via `/etc/ts-lockdown.conf`, which the include sources if present. Private/
+  tailnet resolver IPs belong there, **never** in the tracked script (default stays
+  `1.1.1.1 8.8.8.8`). The installer persists the file across firmware upgrades; it is
+  `.gitignore`d.
 - Keep `docs/DESIGN.md` and `README.md` in sync with script behavior when changing
   scope (WAN derivation, kill-switch targets, hotplug triggers).

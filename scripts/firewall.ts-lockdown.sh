@@ -21,7 +21,14 @@ TS_IF="tailscale0"
 NAT_CHAIN="ts_lockdown_nat"
 FWD_CHAIN="ts_lockdown_fwd"
 STATE_FILE="/tmp/ts-lockdown.state"
-DNS_DROPIN="/tmp/dnsmasq.d/ts-lockdown.conf"
+# dnsmasq reads *.conf from this dir. We pin it as the dnsmasq instance's
+# conf-dir via UCI (see ensure_dns_confdir) so the drop-in is honoured no matter
+# which dnsmasq init ships: a stock OpenWrt init only loads the per-instance
+# /tmp/dnsmasq.cfgXXXX.d, so an `opkg upgrade dnsmasq` that replaces a vendor
+# init would otherwise silently stop reading this file -- and DNS would leak to
+# the local WAN resolver with no error.
+DNS_CONFDIR="/tmp/dnsmasq.d"
+DNS_DROPIN="$DNS_CONFDIR/ts-lockdown.conf"
 DNS_SERVERS="1.1.1.1 8.8.8.8"
 LOCK_FILE="/var/lock/ts-lockdown.lock"
 # '-w 10' waits up to 10s for the xtables lock instead of failing. Needed even
@@ -31,16 +38,40 @@ LOCK_FILE="/var/lock/ts-lockdown.lock"
 IPT="iptables -w 10"
 IP6T="ip6tables -w 10"
 
+# Optional local override, kept OUT of the public repo: set DNS_SERVERS (e.g. to
+# your own tailnet AdGuard resolver) in /etc/ts-lockdown.conf. It is a separate
+# file, so it survives redeploys of this script and never carries private IPs
+# into version control.
+# shellcheck source=/dev/null
+[ -r /etc/ts-lockdown.conf ] && . /etc/ts-lockdown.conf
+
 log() { logger -t ts-lockdown "$@"; }
 
+# Write the dnsmasq drop-in. Returns 0 if the file content changed (caller then
+# reloads dnsmasq), 1 if it was already current -- so editing DNS_SERVERS now
+# takes effect on the next reconcile, without a manual Tailscale toggle, while a
+# steady-state run never reloads dnsmasq.
 dns_apply() {
-    mkdir -p /tmp/dnsmasq.d
-    {
-        echo "no-resolv"
-        for s in $DNS_SERVERS; do echo "server=$s"; done
-    } > "$DNS_DROPIN"
+    mkdir -p "$DNS_CONFDIR"
+    new="$(printf 'no-resolv\n'; for s in $DNS_SERVERS; do printf 'server=%s\n' "$s"; done)"
+    [ "$new" = "$(cat "$DNS_DROPIN" 2>/dev/null)" ] && return 1
+    printf '%s\n' "$new" > "$DNS_DROPIN"
+    return 0
 }
-dns_clear() { rm -f "$DNS_DROPIN"; }
+# Returns 0 if it removed the drop-in (caller reloads dnsmasq), 1 if none existed.
+dns_clear() { [ -f "$DNS_DROPIN" ] && { rm -f "$DNS_DROPIN"; return 0; }; return 1; }
+
+# Pin dnsmasq's conf-dir to DNS_CONFDIR so it actually loads our drop-in. Returns
+# 0 if it had to (re)pin it (caller reloads dnsmasq), 1 if already correct. A
+# no-op on a healthy router; self-heals a confdir lost to a dnsmasq/init upgrade.
+# Same `option confdir` mechanism GL already uses for its own wgclient instance.
+ensure_dns_confdir() {
+    [ "$(uci -q get 'dhcp.@dnsmasq[0].confdir')" = "$DNS_CONFDIR" ] && return 1
+    uci set "dhcp.@dnsmasq[0].confdir=$DNS_CONFDIR"
+    uci commit dhcp
+    log "pinned dnsmasq confdir=$DNS_CONFDIR (was unset or wrong)"
+    return 0
+}
 
 # ---- desired state ----
 enabled="$(uci -q get tailscale.settings.enabled)"
@@ -126,9 +157,27 @@ if [ "$desired" = "lockdown" ]; then
 fi
 
 prev="$(cat "$STATE_FILE" 2>/dev/null)"
-if [ "$desired" != "$prev" ]; then
-    if [ "$desired" = "lockdown" ]; then dns_apply; else dns_clear; fi
+transition=0
+[ "$desired" != "$prev" ] && transition=1
+
+# Reconcile DNS, then reload dnsmasq only if something that affects resolution
+# changed: a state transition, a confdir (re)pin, or a drop-in content change.
+# Each helper returns 1 when already correct, so a healthy router never reloads
+# dnsmasq (no flap) while drift still self-heals on the next reconcile.
+dns_changed=0
+if [ "$desired" = "lockdown" ]; then
+    ensure_dns_confdir && dns_changed=1
+    dns_apply          && dns_changed=1
+else
+    dns_clear          && dns_changed=1
+fi
+if [ "$transition" = 1 ] || [ "$dns_changed" = 1 ]; then
     /etc/init.d/dnsmasq restart >/dev/null 2>&1
+fi
+
+if [ "$transition" = 1 ]; then
     echo "$desired" > "$STATE_FILE"
     log "state -> $desired (wan_devs:$wan_devs exit:$exit_node_ip)"
 fi
+
+exit 0

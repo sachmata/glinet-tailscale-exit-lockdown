@@ -4,6 +4,11 @@ IPT="iptables -w 10"
 IP6T="ip6tables -w 10"
 TS_IF="tailscale0"
 DNS_SERVERS="1.1.1.1 8.8.8.8"
+# Honour the same local override the include uses, so we delete the right host
+# routes. The file itself is left in place (user config), like unrelated crontab
+# entries.
+# shellcheck source=/dev/null
+[ -r /etc/ts-lockdown.conf ] && . /etc/ts-lockdown.conf
 
 # Remove firewall include (named section)
 if [ -n "$(uci -q get firewall.ts_lockdown_include)" ]; then
@@ -35,6 +40,13 @@ if [ -f /etc/sysupgrade.conf ]; then
     sed -i '\#^/etc/hotplug.d/iface/99-ts-lockdown$#d' /etc/sysupgrade.conf
     sed -i '\#^/usr/sbin/ts-lockdown-status$#d' /etc/sysupgrade.conf
     [ "$crontab_removed" = 1 ] && sed -i '\#^/etc/crontabs/root$#d' /etc/sysupgrade.conf
+fi
+
+# Remove the dnsmasq confdir pin we added (back to the stock per-instance
+# conf-dir). Only if it is still our value, so a user's own confdir is preserved.
+if [ "$(uci -q get 'dhcp.@dnsmasq[0].confdir')" = "/tmp/dnsmasq.d" ]; then
+    uci -q delete 'dhcp.@dnsmasq[0].confdir'
+    uci commit dhcp
 fi
 
 # Tear down live chains (remove ALL jumps), then routes

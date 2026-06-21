@@ -7,6 +7,9 @@ live-state/
 *.local
 *.bak
 
+# Local resolver override (lives on the router; keep private IPs out of git)
+ts-lockdown.conf
+
 # Editor/OS noise
 .DS_Store
 *~

@@ -56,6 +56,18 @@ for d in $wan_devs; do
 done
 unsealed="$(echo "$unsealed" | sed 's/^ *//;s/ *$//')"
 
+# DNS drop-in must be LOADED by the running dnsmasq, not merely present on disk:
+# an opkg dnsmasq upgrade can replace the init and stop loading our conf-dir,
+# silently dropping DNS back to the local WAN resolver (a leak that still looks
+# "present"). Confirm the active generated config's conf-dir is the directory the
+# drop-in lives in.
+dropin_dir="${DNS_DROPIN%/*}"
+dns_loaded=0
+if [ -f "$DNS_DROPIN" ]; then
+    active_confdirs="$(grep -h '^conf-dir=' /var/etc/dnsmasq.conf.* 2>/dev/null | cut -d= -f2 | cut -d, -f1 | tr '\n' ' ')"
+    case " $active_confdirs " in *" $dropin_dir "*) dns_loaded=1 ;; esac
+fi
+
 # ---- compute drift ----
 drift=""
 add_drift() { drift="${drift:+$drift; }$1"; }
@@ -72,6 +84,7 @@ else
     # the include itself defers sealing until a device exists. Only flag a WAN
     # that is present yet unsealed.
     { [ -z "$wan_devs" ] || [ -z "$unsealed" ]; } || add_drift "unsealed WAN:$unsealed"
+    [ "$dns_loaded" = 1 ] || add_drift "DNS drop-in not loaded by dnsmasq (conf-dir != $dropin_dir)"
 fi
 
 # ---- check mode: silent verdict ----
@@ -104,7 +117,7 @@ if [ "$desired" = "lockdown" ]; then
     else
         markif 0 "WAN present but UNSEALED: $unsealed"
     fi
-    markif "$([ -f "$DNS_DROPIN" ] && echo 1 || echo 0)" "DNS drop-in present"
+    markif "$dns_loaded" "DNS drop-in loaded by dnsmasq"
 else
     if [ "$nat_jumps" -eq 0 ] && [ "$fwd4_jumps" -eq 0 ] && [ "$fwd6_jumps" -eq 0 ]; then
         markif 1 "no lockdown rules present (normal mode)"
